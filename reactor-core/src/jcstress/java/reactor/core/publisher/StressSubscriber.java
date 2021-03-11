@@ -15,15 +15,18 @@
  */
 package reactor.core.publisher;
 
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 import org.reactivestreams.Subscription;
 import reactor.core.CoreSubscriber;
 import reactor.util.context.Context;
 
-public class StressSubscriber<T> extends BaseSubscriber<T> {
+public class StressSubscriber<T> implements CoreSubscriber<T> {
 
 	enum Operation {
 		ON_NEXT,
@@ -36,7 +39,11 @@ public class StressSubscriber<T> extends BaseSubscriber<T> {
 
 	final Context context;
 
+	public Subscription s;
+
 	public Throwable error;
+
+	public List<Throwable> droppedErrors = new CopyOnWriteArrayList<>();
 
 	public AtomicReference<Operation> guard = new AtomicReference<>(null);
 
@@ -74,7 +81,11 @@ public class StressSubscriber<T> extends BaseSubscriber<T> {
 	 */
 	public StressSubscriber(long initRequest) {
 		this.initRequest = initRequest;
-		this.context = Operators.enableOnDiscard(null, (__) -> onNextDiscarded.incrementAndGet());
+		this.context = Operators.enableOnDiscard(Context.of(Hooks.KEY_ON_ERROR_DROPPED,
+				(Consumer<Throwable>) throwable -> {
+					droppedErrors.add(throwable);
+				}),
+				(__) -> onNextDiscarded.incrementAndGet());
 	}
 
 	@Override
@@ -83,7 +94,8 @@ public class StressSubscriber<T> extends BaseSubscriber<T> {
 	}
 
 	@Override
-	protected void hookOnSubscribe(Subscription subscription) {
+	public void onSubscribe(Subscription subscription) {
+		this.s = subscription;
 		if (!guard.compareAndSet(null, Operation.ON_SUBSCRIBE)) {
 			concurrentOnSubscribe.set(true);
 		} else {
@@ -96,7 +108,7 @@ public class StressSubscriber<T> extends BaseSubscriber<T> {
 	}
 
 	@Override
-	protected void hookOnNext(T value) {
+	public void onNext(T value) {
 		if (!guard.compareAndSet(null, Operation.ON_NEXT)) {
 			concurrentOnNext.set(true);
 		} else {
@@ -106,7 +118,7 @@ public class StressSubscriber<T> extends BaseSubscriber<T> {
 	}
 
 	@Override
-	protected void hookOnError(Throwable throwable) {
+	public void onError(Throwable throwable) {
 		if (!guard.compareAndSet(null, Operation.ON_ERROR)) {
 			concurrentOnError.set(true);
 		} else {
@@ -117,12 +129,20 @@ public class StressSubscriber<T> extends BaseSubscriber<T> {
 	}
 
 	@Override
-	protected void hookOnComplete() {
+	public void onComplete() {
 		if (!guard.compareAndSet(null, Operation.ON_COMPLETE)) {
 			concurrentOnComplete.set(true);
 		} else {
 			guard.compareAndSet(Operation.ON_COMPLETE, null);
 		}
 		onCompleteCalls.incrementAndGet();
+	}
+
+	public void request(long n) {
+		s.request(n);
+	}
+
+	public void cancel() {
+		s.cancel();
 	}
 }
